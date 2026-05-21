@@ -2,11 +2,15 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 require('dotenv').config();
+const multer = require('multer');
+const nodemailer = require('nodemailer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 
 const allowedOrigins = [
-  'http://localhost:3000',           
+  'http://localhost:3000',
   'https://tstdsbrd.netlify.app'
 ];
 app.use(cors({
@@ -23,11 +27,8 @@ app.use(cors({
 app.use(express.json());
 
 const pool = new Pool({
-        user: 'postgres',
-        host: 'localhost',
-        database: 'template_dashboard_db',
-        password: 'pgsc#1290',
-        port: 5432,
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } 
 });
 
 app.get('/api/categories', async (req, res) => {
@@ -121,131 +122,116 @@ app.get('/api/orders/:orderUuid', async (req, res) => {
   }
 });
 
-// ========================
-// Direct Bank Payment (Manual Verification)
-// ========================
-const multer = require('multer');
-const nodemailer = require('nodemailer');
-const path = require('path');
-const fs = require('fs');
-
-// Configure multer for file uploads
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, 'uploads');
-        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
-    }
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
 });
-const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
+const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Email transporter (configure with your SMTP settings)
 const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: process.env.SMTP_PORT || 587,
-    secure: false,
-    auth: {
-        user: process.env.SMTP_USER, // your email
-        pass: process.env.SMTP_PASS  // your app password
-    }
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: process.env.SMTP_PORT || 587,
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
 });
 
-// Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// POST /api/bank-order – user submits bank payment order
 app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
-    const { orderUuid, customerName, customerEmail, customerPhone, orderNote, paymentMethod } = req.body;
-    if (!orderUuid || !customerName || !customerEmail) {
-        return res.status(400).json({ error: 'Missing required fields' });
-    }
-    const slipUrl = req.file ? `/uploads/${req.file.filename}` : null;
-    const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
+  const { orderUuid, customerName, customerEmail, customerPhone, orderNote, paymentMethod } = req.body;
+  if (!orderUuid || !customerName || !customerEmail) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  const slipUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
-    try {
-        // First, ensure the order exists in orders table (status='pending')
-        await pool.query(
-            `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method)
-             VALUES ($1, $2, $3, $4, 'pending', $5)
-             ON CONFLICT (order_uuid) DO NOTHING`,
-            [orderUuid, req.body.templateId || 1, req.body.totalAmount || 0, 'LKR', paymentMethod || 'bank']
-        );
+  try {
+    // Ensure the order exists in orders table
+    await pool.query(
+      `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
+       ON CONFLICT (order_uuid) DO NOTHING`,
+      [orderUuid, req.body.templateId || 1, req.body.totalAmount || 0, 'LKR', paymentMethod || 'bank']
+    );
 
-        await pool.query(
-            `INSERT INTO bank_orders (order_uuid, payment_method, customer_name, customer_email, customer_phone, order_note, slip_image_url, reference_code)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [orderUuid, paymentMethod || 'bank', customerName, customerEmail, customerPhone, orderNote, slipUrl, referenceCode]
-        );
-        res.json({ success: true, message: 'Order placed. Awaiting verification.' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to place order' });
-    }
+    await pool.query(
+      `INSERT INTO bank_orders (order_uuid, payment_method, customer_name, customer_email, customer_phone, order_note, slip_image_url, reference_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [orderUuid, paymentMethod || 'bank', customerName, customerEmail, customerPhone, orderNote, slipUrl, referenceCode]
+    );
+    res.json({ success: true, message: 'Order placed. Awaiting verification.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to place order' });
+  }
 });
 
-// GET /api/admin/bank-orders – list pending orders (for admin panel)
 app.get('/api/admin/bank-orders', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT bo.*, o.template_id, o.total_amount, t.name as template_name
-            FROM bank_orders bo
-            JOIN orders o ON bo.order_uuid = o.order_uuid
-            JOIN templates t ON o.template_id = t.id
-            WHERE bo.status = 'pending'
-            ORDER BY bo.created_at DESC
-        `);
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: err.message });
-    }
+  try {
+    const result = await pool.query(`
+      SELECT bo.*, o.template_id, o.total_amount, t.name as template_name
+      FROM bank_orders bo
+      JOIN orders o ON bo.order_uuid = o.order_uuid
+      JOIN templates t ON o.template_id = t.id
+      WHERE bo.status = 'pending'
+      ORDER BY bo.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// PATCH /api/admin/verify-bank-order/:orderUuid – approve or reject
 app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
-    const { orderUuid } = req.params;
-    const { action, adminNote, templateLink } = req.body; // action: 'approve' or 'reject'
-    try {
-        if (action === 'approve') {
-            await pool.query(
-                `UPDATE bank_orders SET status = 'approved', admin_note = $1 WHERE order_uuid = $2`,
-                [adminNote || '', orderUuid]
-            );
-            await pool.query(`UPDATE orders SET status = 'paid' WHERE order_uuid = $1`, [orderUuid]);
+  const { orderUuid } = req.params;
+  const { action, adminNote, templateLink } = req.body;
+  try {
+    if (action === 'approve') {
+      await pool.query(
+        `UPDATE bank_orders SET status = 'approved', admin_note = $1 WHERE order_uuid = $2`,
+        [adminNote || '', orderUuid]
+      );
+      await pool.query(`UPDATE orders SET status = 'paid' WHERE order_uuid = $1`, [orderUuid]);
 
-            // Get customer email
-            const bankOrder = await pool.query(`SELECT customer_email, customer_name FROM bank_orders WHERE order_uuid = $1`, [orderUuid]);
-            const customerEmail = bankOrder.rows[0]?.customer_email;
-            if (customerEmail && templateLink) {
-                await transporter.sendMail({
-                    to: customerEmail,
-                    subject: 'Your Template Download Link',
-                    html: `
-                        <h3>Payment Verified!</h3>
-                        <p>Dear ${bankOrder.rows[0].customer_name},</p>
-                        <p>Thank you for your payment. You can now download your template using the link below:</p>
-                        <a href="${templateLink}">${templateLink}</a>
-                        <p>Best regards,<br/>InviteYou.lk Team</p>
-                    `
-                });
-            }
-        } else if (action === 'reject') {
-            await pool.query(
-                `UPDATE bank_orders SET status = 'rejected', admin_note = $1 WHERE order_uuid = $2`,
-                [adminNote || '', orderUuid]
-            );
-        } else {
-            return res.status(400).json({ error: 'Invalid action' });
-        }
-        res.json({ success: true });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: err.message });
+      const bankOrder = await pool.query(`SELECT customer_email, customer_name FROM bank_orders WHERE order_uuid = $1`, [orderUuid]);
+      const customerEmail = bankOrder.rows[0]?.customer_email;
+      if (customerEmail && templateLink) {
+        await transporter.sendMail({
+          to: customerEmail,
+          subject: 'Your Template Download Link',
+          html: `
+            <h3>Payment Verified!</h3>
+            <p>Dear ${bankOrder.rows[0].customer_name},</p>
+            <p>Thank you for your payment. You can now download your template using the link below:</p>
+            <a href="${templateLink}">${templateLink}</a>
+            <p>Best regards,<br/>InviteYou.lk Team</p>
+          `
+        });
+      }
+    } else if (action === 'reject') {
+      await pool.query(
+        `UPDATE bank_orders SET status = 'rejected', admin_note = $1 WHERE order_uuid = $2`,
+        [adminNote || '', orderUuid]
+      );
+    } else {
+      return res.status(400).json({ error: 'Invalid action' });
     }
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
