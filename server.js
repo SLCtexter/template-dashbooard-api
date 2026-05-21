@@ -48,6 +48,10 @@ app.get('/', (req, res) => {
   res.send('Backend is alive!');
 });
 
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'API is working!' });
+});
+
 app.get('/api/categories', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM categories ORDER BY order_index');
