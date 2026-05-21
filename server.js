@@ -9,6 +9,7 @@ const fs = require('fs');
 
 const app = express();
 
+// CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
   'https://tstdsbrd.netlify.app'
@@ -26,9 +27,25 @@ app.use(cors({
 
 app.use(express.json());
 
+// Database connection pool (Supabase)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } 
+  ssl: { rejectUnauthorized: false }
+});
+
+// ✅ Test database connection before starting server
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('Database connection failed:', err.message);
+    process.exit(1); // Stop server if database is unreachable
+  } else {
+    console.log('Database connected successfully');
+    release();
+  }
+});
+
+app.get('/', (req, res) => {
+  res.send('Backend is alive!');
 });
 
 app.get('/api/categories', async (req, res) => {
@@ -145,6 +162,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
@@ -156,7 +174,6 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
   const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
   try {
-    // Ensure the order exists in orders table
     await pool.query(
       `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method)
        VALUES ($1, $2, $3, $4, 'pending', $5)
