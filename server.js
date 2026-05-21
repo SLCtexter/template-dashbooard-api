@@ -12,7 +12,8 @@ const app = express();
 // CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://tstdsbrd.netlify.app'
+  'https://tstdsbrd.netlify.app',
+  'https://tstsdsbrd.netlify.app'
 ];
 app.use(cors({
   origin: function (origin, callback) {
