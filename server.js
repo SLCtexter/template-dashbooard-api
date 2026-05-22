@@ -6,10 +6,10 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const app = express();
 
-// CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
   'https://tstdsbrd.netlify.app',
@@ -28,29 +28,43 @@ app.use(cors({
 
 app.use(express.json());
 
-// Database connection pool (Supabase)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// ✅ Test database connection before starting server
+
 pool.connect((err, client, release) => {
   if (err) {
     console.error('Database connection failed:', err.message);
-    process.exit(1); // Stop server if database is unreachable
+    process.exit(1);
   } else {
     console.log('Database connected successfully');
     release();
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Backend is alive!');
-});
+app.get('/', (req, res) => res.send('Backend is alive!'));
+app.get('/api/test', (req, res) => res.json({ message: 'API is working!' }));
 
-app.get('/api/test', (req, res) => {
-  res.json({ message: 'API is working!' });
+const generatePayHereHash = (orderId, amount) => {
+  const merchantId = '1234923';
+  const merchantSecretBase64 = 'NzIxNTYzNjYyMTYwOTU4NjUyMzIzODM1MTEyMzE2MDA1MTcxNzY=';
+  const currency = 'LKR';
+  const amountFormatted = parseFloat(amount).toFixed(2);
+  const secret = Buffer.from(merchantSecretBase64, 'base64').toString();
+  const md5Secret = crypto.createHash('md5').update(secret).digest('hex').toUpperCase();
+  const hashString = merchantId + orderId + amountFormatted + currency + md5Secret;
+  return crypto.createHash('md5').update(hashString).digest('hex').toUpperCase();
+};
+
+app.post('/api/payhere-hash', (req, res) => {
+  const { orderId, amount } = req.body;
+  if (!orderId || !amount) {
+    return res.status(400).json({ error: 'Missing orderId or amount' });
+  }
+  const hash = generatePayHereHash(orderId, amount);
+  res.json({ hash });
 });
 
 app.get('/api/categories', async (req, res) => {
@@ -122,9 +136,7 @@ app.patch('/api/orders/:orderUuid', async (req, res) => {
   const { status } = req.body;
   try {
     const result = await pool.query('UPDATE orders SET status = $1 WHERE order_uuid = $2 RETURNING *', [status, orderUuid]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Order not found' });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -155,7 +167,7 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
-const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -167,7 +179,6 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
@@ -175,7 +186,10 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
   if (!orderUuid || !customerName || !customerEmail) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-  const slipUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
+  // ✅ Slip image full URL (using BACKEND_URL environment variable)
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+  const slipUrl = req.file ? `${backendUrl}/uploads/${req.file.filename}` : null;
   const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
   try {
@@ -226,21 +240,26 @@ app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
       );
       await pool.query(`UPDATE orders SET status = 'paid' WHERE order_uuid = $1`, [orderUuid]);
 
-      const bankOrder = await pool.query(`SELECT customer_email, customer_name FROM bank_orders WHERE order_uuid = $1`, [orderUuid]);
-      const customerEmail = bankOrder.rows[0]?.customer_email;
-      if (customerEmail && templateLink) {
-        await transporter.sendMail({
-          to: customerEmail,
-          subject: 'Your Template Download Link',
-          html: `
-            <h3>Payment Verified!</h3>
-            <p>Dear ${bankOrder.rows[0].customer_name},</p>
-            <p>Thank you for your payment. You can now download your template using the link below:</p>
-            <a href="${templateLink}">${templateLink}</a>
-            <p>Best regards,<br/>InviteYou.lk Team</p>
-          `
-        });
+      try {
+        const bankOrder = await pool.query(`SELECT customer_email, customer_name FROM bank_orders WHERE order_uuid = $1`, [orderUuid]);
+        const customerEmail = bankOrder.rows[0]?.customer_email;
+        if (customerEmail && templateLink) {
+          await transporter.sendMail({
+            to: customerEmail,
+            subject: 'Your Template Download Link',
+            html: `
+              <h3>Payment Verified!</h3>
+              <p>Dear ${bankOrder.rows[0].customer_name},</p>
+              <p>Thank you for your payment. You can now download your template using the link below:</p>
+              <a href="${templateLink}">${templateLink}</a>
+              <p>Best regards,<br/>InviteYou.lk Team</p>
+            `
+          });
+        }
+      } catch (emailErr) {
+        console.error('Email sending failed:', emailErr.message);
       }
+
     } else if (action === 'reject') {
       await pool.query(
         `UPDATE bank_orders SET status = 'rejected', admin_note = $1 WHERE order_uuid = $2`,
