@@ -12,7 +12,7 @@ const app = express();
 
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://tstdsbrd.netlify.app',
+  'https://template-store-dashboard-hyb3ynf3g-stew02-s-projects1.vercel.app/login',
   'https://tstsdsbrd.netlify.app'
 ];
 app.use(cors({
@@ -187,7 +187,6 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  // ✅ Slip image full URL (using BACKEND_URL environment variable)
   const backendUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
   const slipUrl = req.file ? `${backendUrl}/uploads/${req.file.filename}` : null;
   const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
