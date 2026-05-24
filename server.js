@@ -12,9 +12,10 @@ const app = express();
 
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://template-store-dashboard-hyb3ynf3g-stew02-s-projects1.vercel.app/login',
-  'https://tstsdsbrd.netlify.app'
+  'https://template-store-dashboard.vercel.app',
+  'https://template-store-dashboard-hyb3ynf3g-stew02-s-projects1.vercel.app'
 ];
+
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
