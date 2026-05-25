@@ -10,23 +10,33 @@ const crypto = require('crypto');
 
 const app = express();
 
+// For production, use allowedOrigins list. For now, allow all to fix CORS immediately.
+app.use(cors({ origin: true, credentials: true })); // Allow all origins
+
+// Optional: If you want to keep allowed list, uncomment below and comment above
+/*
 const allowedOrigins = [
   'http://localhost:3000',
   'https://tstdsbrd.netlify.app',
   'https://tstsdsbrd.netlify.app',
   'https://template-store-dashboard.vercel.app',
-  'https://template-store-dashboard-hyb3ynf3g-stew02-s-projects1.vercel.app'
+  /.*\.vercel\.app$/ // This regex allows all vercel preview URLs
 ];
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
+    const isAllowed = allowedOrigins.some(pattern => {
+      if (pattern instanceof RegExp) return pattern.test(origin);
+      return pattern === origin;
+    });
+    if (!isAllowed) {
+      return callback(new Error('CORS policy blocked'), false);
     }
     return callback(null, true);
-  }
+  },
+  credentials: true
 }));
+*/
 
 app.use(express.json());
 
@@ -95,8 +105,13 @@ app.get('/api/templates', async (req, res) => {
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error('Templates query error:', err);
+    try {
+      const fallbackResult = await pool.query('SELECT * FROM templates');
+      res.json(fallbackResult.rows);
+    } catch (fallbackErr) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
@@ -194,12 +209,11 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  const backendUrl = process.env.BACKEND_URL || `https://${req.get('host')}`;
   const slipUrl = req.file ? `${backendUrl}/uploads/${req.file.filename}` : null;
   const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
   try {
-
     const selectedFeaturesJson = selectedFeatures || '[]';
     await pool.query(
       `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method, selected_features)
@@ -254,6 +268,7 @@ app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
       );
       await pool.query(`UPDATE orders SET status = 'paid' WHERE order_uuid = $1`, [orderUuid]);
 
+      // Send email with template link
       try {
         const bankOrder = await pool.query(`SELECT customer_email, customer_name FROM bank_orders WHERE order_uuid = $1`, [orderUuid]);
         const customerEmail = bankOrder.rows[0]?.customer_email;
@@ -266,7 +281,7 @@ app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
               <p>Dear ${bankOrder.rows[0].customer_name},</p>
               <p>Thank you for your payment. You can now download your template using the link below:</p>
               <a href="${templateLink}">${templateLink}</a>
-              <p>Best regards,<br/>InviteYou.lk Team</p>
+              <p>Best regards,<br/>Template Store Team</p>
             `
           });
           console.log(`Email sent to ${customerEmail}`);
