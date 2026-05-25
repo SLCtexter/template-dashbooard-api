@@ -12,10 +12,11 @@ const app = express();
 
 const allowedOrigins = [
   'http://localhost:3000',
+  'https://tstdsbrd.netlify.app',
+  'https://tstsdsbrd.netlify.app',
   'https://template-store-dashboard.vercel.app',
   'https://template-store-dashboard-hyb3ynf3g-stew02-s-projects1.vercel.app'
 ];
-
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
@@ -33,7 +34,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
-
 
 pool.connect((err, client, release) => {
   if (err) {
@@ -170,6 +170,8 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
   port: process.env.SMTP_PORT || 587,
@@ -180,24 +182,30 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+transporter.verify((error, success) => {
+  if (error) console.error('SMTP connection error:', error);
+  else console.log('SMTP ready to send emails');
+});
 
 app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
-  const { orderUuid, customerName, customerEmail, customerPhone, orderNote, paymentMethod } = req.body;
+  const { orderUuid, customerName, customerEmail, customerPhone, orderNote, paymentMethod, templateId, totalAmount, selectedFeatures } = req.body;
+
   if (!orderUuid || !customerName || !customerEmail) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  const backendUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+  const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
   const slipUrl = req.file ? `${backendUrl}/uploads/${req.file.filename}` : null;
   const referenceCode = `BANK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
   try {
+
+    const selectedFeaturesJson = selectedFeatures || '[]';
     await pool.query(
-      `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method)
-       VALUES ($1, $2, $3, $4, 'pending', $5)
+      `INSERT INTO orders (order_uuid, template_id, total_amount, currency, status, payment_method, selected_features)
+       VALUES ($1, $2, $3, 'LKR', 'pending', $4, $5)
        ON CONFLICT (order_uuid) DO NOTHING`,
-      [orderUuid, req.body.templateId || 1, req.body.totalAmount || 0, 'LKR', paymentMethod || 'bank']
+      [orderUuid, templateId || 1, totalAmount || 0, paymentMethod || 'bank', selectedFeaturesJson]
     );
 
     await pool.query(
@@ -205,9 +213,10 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [orderUuid, paymentMethod || 'bank', customerName, customerEmail, customerPhone, orderNote, slipUrl, referenceCode]
     );
+
     res.json({ success: true, message: 'Order placed. Awaiting verification.' });
   } catch (err) {
-    console.error(err);
+    console.error('Bank order error:', err);
     res.status(500).json({ error: 'Failed to place order' });
   }
 });
@@ -215,7 +224,12 @@ app.post('/api/bank-order', upload.single('slip'), async (req, res) => {
 app.get('/api/admin/bank-orders', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT bo.*, o.template_id, o.total_amount, t.name as template_name
+      SELECT 
+        bo.*, 
+        o.template_id, 
+        o.total_amount, 
+        o.selected_features,
+        t.name as template_name
       FROM bank_orders bo
       JOIN orders o ON bo.order_uuid = o.order_uuid
       JOIN templates t ON o.template_id = t.id
@@ -255,6 +269,9 @@ app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
               <p>Best regards,<br/>InviteYou.lk Team</p>
             `
           });
+          console.log(`Email sent to ${customerEmail}`);
+        } else {
+          console.log('Email not sent: missing customer email or template link');
         }
       } catch (emailErr) {
         console.error('Email sending failed:', emailErr.message);
@@ -265,6 +282,7 @@ app.patch('/api/admin/verify-bank-order/:orderUuid', async (req, res) => {
         `UPDATE bank_orders SET status = 'rejected', admin_note = $1 WHERE order_uuid = $2`,
         [adminNote || '', orderUuid]
       );
+      await pool.query(`UPDATE orders SET status = 'rejected' WHERE order_uuid = $1`, [orderUuid]);
     } else {
       return res.status(400).json({ error: 'Invalid action' });
     }
